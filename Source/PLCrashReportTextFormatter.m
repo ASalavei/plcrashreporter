@@ -153,11 +153,15 @@ NSInteger binaryImageSort(id binary1, id binary2, void *context);
     }
 
     {
+        NSString *reportGUID = @"[TODO]";
+        if (report.hasReportInfo && report.reportInfo.reportGUID != nil)
+            reportGUID = report.reportInfo.reportGUID;
+        
         NSString *hardwareModel = @"???";
         if (report.hasMachineInfo && report.machineInfo.modelName != nil)
             hardwareModel = report.machineInfo.modelName;
 
-        [text appendFormat: @"Incident Identifier: [TODO]\n"];
+        [text appendFormat: @"Incident Identifier: %@\n", reportGUID];
         [text appendFormat: @"CrashReporter Key:   [TODO]\n"];
         [text appendFormat: @"Hardware Model:      %@\n", hardwareModel];
     }
@@ -238,6 +242,21 @@ NSInteger binaryImageSort(id binary1, id binary2, void *context);
         [text appendString: @"\n"];
     }
     
+    /* If an exception stack trace is available, output a pseudo-thread to provide the frame info */
+    if (report.exceptionInfo != nil && report.exceptionInfo.stackFrames != nil && [report.exceptionInfo.stackFrames count] > 0) {
+        PLCrashReportExceptionInfo *exception = report.exceptionInfo;
+        
+        /* Create the pseudo-thread header. We use the named thread format to mark this thread */
+        [text appendString: @"Last Exception Backtrace:\n"];
+        
+        /* Write out the frames */
+        for (NSUInteger frame_idx = 0; frame_idx < [exception.stackFrames count]; frame_idx++) {
+            PLCrashReportStackFrameInfo *frameInfo = [exception.stackFrames objectAtIndex: frame_idx];
+            [text appendString: [self formatStackFrame: frameInfo frameIndex: frame_idx report: report]];
+        }
+        [text appendString: @"\n\n"];
+    }
+
     /* Threads */
     PLCrashReportThreadInfo *crashed_thread = nil;
     NSInteger maxThreadNum = 0;
@@ -258,23 +277,6 @@ NSInteger binaryImageSort(id binary1, id binary2, void *context);
         maxThreadNum = MAX(maxThreadNum, thread.threadNumber);
     }
     
-    /* If an exception stack trace is available, output a pseudo-thread to provide the frame info */
-    if (report.exceptionInfo != nil && report.exceptionInfo.stackFrames != nil && [report.exceptionInfo.stackFrames count] > 0) {
-        PLCrashReportExceptionInfo *exception = report.exceptionInfo;
-        NSInteger threadNum = maxThreadNum + 1;
-
-        /* Create the pseudo-thread header. We use the named thread format to mark this thread */
-        [text appendFormat: @"Thread %ld name:  Exception Backtrace\n", threadNum];
-        [text appendFormat: @"Thread %ld:\n", (long) threadNum];
-
-        /* Write out the frames */
-        for (NSUInteger frame_idx = 0; frame_idx < [exception.stackFrames count]; frame_idx++) {
-            PLCrashReportStackFrameInfo *frameInfo = [exception.stackFrames objectAtIndex: frame_idx];
-            [text appendString: [self formatStackFrame: frameInfo frameIndex: frame_idx report: report]];
-        }
-        [text appendString: @"\n"];
-    }
-
     /* Registers */
     if (crashed_thread != nil) {
         [text appendFormat: @"Thread %ld crashed with %@ Thread State:\n", (long) crashed_thread.threadNumber, codeType];
@@ -435,8 +437,10 @@ NSInteger binaryImageSort(id binary1, id binary2, void *context);
      * address, and the associated image name */
     uint64_t baseAddress = 0x0;
     uint64_t pcOffset = 0x0;
+    uint64_t symOffset = 0x0;
+    NSString *symName = nil;
     NSString *imageName = @"\?\?\?";
-    
+
     PLCrashReportBinaryImageInfo *imageInfo = [report imageForAddress: frameInfo.instructionPointer];
     if (imageInfo != nil) {
         imageName = [imageInfo.imageName lastPathComponent];
@@ -444,12 +448,43 @@ NSInteger binaryImageSort(id binary1, id binary2, void *context);
         pcOffset = frameInfo.instructionPointer - imageInfo.imageBaseAddress;
     }
     
-    return [NSString stringWithFormat: @"%-4ld%-36s0x%08" PRIx64 " 0x%" PRIx64 " + %" PRId64 "\n", 
+    /* Make sure UTF8/16 characters are handled correctly */
+    NSInteger offset = 0;
+    NSInteger index = 0;
+    for (index = 0; index < [imageName length]; index++) {
+        NSRange range = [imageName rangeOfComposedCharacterSequenceAtIndex:index];
+        if (range.length > 1) {
+            offset += range.length - 1;
+            index += range.length - 1;
+        }
+        if (index > 32) {
+            imageName = [NSString stringWithFormat:@"%@...", [imageName substringToIndex:index - 1]];
+            index += 3;
+            break;
+        }
+    }
+    if (index-offset < 36) {
+        imageName = [imageName stringByPaddingToLength:36+offset withString:@" " startingAtIndex:0];
+    }
+    
+    if (frameInfo.symbolStart != 0) {
+        symOffset = frameInfo.instructionPointer - frameInfo.symbolStart;
+    } else {
+        symOffset = pcOffset;
+    }
+    
+    if (frameInfo.symbolName) {
+        symName = frameInfo.symbolName;
+    } else {
+        symName = [NSString stringWithFormat: @"0x%" PRIx64, baseAddress];
+    }
+    
+    return [NSString stringWithFormat: @"%-4ld%@0x%08" PRIx64 " %@ + %" PRId64 "\n",
             (long) frameIndex,
-            [imageName UTF8String],
+            imageName,
             frameInfo.instructionPointer, 
-            baseAddress, 
-            pcOffset];
+            symName, 
+            symOffset];
 }
 
 /**

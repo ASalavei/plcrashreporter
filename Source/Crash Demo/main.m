@@ -28,17 +28,73 @@
 
 #import <Foundation/Foundation.h>
 #import "CrashReporter.h"
+#import <pthread.h>
+
+@interface TestObject : NSObject
+
+- (void)aMethod;
+
+@end
+
+@implementation TestObject
+
+- (void)aMethod
+{
+    /* Trigger a crash in Obj-C */
+    [(NSObject *)(((uintptr_t *)NULL)[1]) self];
+}
+
+@end
 
 /* A custom post-crash callback */
 void post_crash_callback (siginfo_t *info, ucontext_t *uap, void *context) {
     // this is not async-safe, but this is a test implementation
-    NSLog(@"post crash callback: signo=%d, uap=%p, context=%p", info->si_signo, uap, context);
+//    NSLog(@"post crash callback: signo=%d, uap=%p, context=%p", info->si_signo, uap, context);
 }
 
+void thread_stackFrame3 (int crashThreaded) {
+    /* Trigger a threaded crash */
+    if (crashThreaded == 1)
+    	//printf("%s", (char *)0x123124);
+	    ((char *)NULL)[2] = 0;
+    else if (crashThreaded == 3) {
+        TestObject *obj = [[TestObject alloc] init];
+        [obj aMethod];
+    }
+    sleep(2);
+}
 
-void stackFrame (void) {
+void thread_stackFrame2 (int crashThreaded) {
+	thread_stackFrame3(crashThreaded);
+}
+
+void *thread_stackFrame (void *arg) {
+	thread_stackFrame2((int)(intptr_t)arg);
+    return NULL;
+}
+
+void stackFrame2 (int crashThreaded) {
+    pthread_t thread;
+    
+    pthread_create(&thread, NULL, thread_stackFrame, (void *)(intptr_t)crashThreaded);
+    
     /* Trigger a crash */
-    ((char *)NULL)[1] = 0;
+    if (crashThreaded == 0)
+		((char *)NULL)[1] = 0;
+    else if (crashThreaded == 2) {
+        TestObject *obj = [[TestObject alloc] init];
+        [obj aMethod];
+    }
+    
+    sleep(2);
+}
+
+void stackFrame (int crashThreaded) {
+    if (crashThreaded == 4) {
+        [NSException raise:NSInvalidArgumentException format:@"Foo must not be nil"];
+    } else {
+        stackFrame2(crashThreaded);
+    }
 }
 
 /* If a crash report exists, make it accessible via iTunes document sharing. This is a no-op on Mac OS X. */
@@ -73,6 +129,14 @@ static void save_crash_report () {
 #endif
 }
 
+/* argv[1]:
+    0: Crash on main thread.
+    1: Crash on secondary thread.
+    2: Crash Objective-C on main thread.
+    3: Crash Objective-C on seconary thread.
+    4: Crash Objective-C NSException
+    *: Don't crash.
+*/
 int main (int argc, char *argv[]) {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     NSError *error = nil;
@@ -94,7 +158,7 @@ int main (int argc, char *argv[]) {
     }
 
     /* Add another stack frame */
-    stackFrame();
+    stackFrame(argc > 1 ? atoi(argv[1]) : 0);
 
     [pool release];
 }

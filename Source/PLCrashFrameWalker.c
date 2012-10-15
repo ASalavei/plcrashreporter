@@ -31,6 +31,36 @@
 
 
 /**
+ * Return the plframe_error_t corresponding to the given libtinyunwind error code
+ */
+plframe_error_t plframe_error_from_tinyunwerror(int error) {
+    switch (error) {
+        case TINYUNW_ESUCCESS:
+            return PLFRAME_ESUCCESS;
+        case TINYUNW_EUNSPEC:
+            return PLFRAME_EUNKNOWN;
+        case TINYUNW_ENOMEM:
+            /* Close equivelance; memory allocation should not be happening. */
+            return PLFRAME_INTERNAL;
+        case TINYUNW_EBADREG:
+            return PLFRAME_EBADREG;
+        case TINYUNW_EINVALIDIP:
+            /* Close equivelance. */
+            return PLFRAME_EBADFRAME;
+        case TINYUNW_EBADFRAME:
+            return PLFRAME_EBADFRAME;
+        case TINYUNW_EINVAL:
+            return PLFRAME_ENOTSUP;
+        case TINYUNW_ENOFRAME:
+            return PLFRAME_ENOFRAME;
+        case TINYUNW_ENOINFO:
+            return PLFRAME_ENOFRAME;
+        default:
+            return PLFRAME_EUNKNOWN;
+    }
+}
+
+/**
  * Return an error description for the given plframe_error_t.
  */
 const char *plframe_strerror (plframe_error_t error) {
@@ -105,4 +135,10 @@ void plframe_test_thread_stop (plframe_test_thead_t *args) {
     
     /* Wait for exit */
     pthread_join(args->thread, NULL);
+}
+
+// PLFrameWalker API
+plframe_error_t plframe_get_symbol (plframe_greg_t ip, plframe_greg_t *symstart, const char ** const symname)
+{
+    return plframe_error_from_tinyunwerror(tinyunw_get_symbol_info(ip, (tinyunw_word_t *)symstart, symname));
 }

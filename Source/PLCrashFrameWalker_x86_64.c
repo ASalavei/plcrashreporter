@@ -1,7 +1,8 @@
 /*
+ * Author: Gwynne Raskind <gwynne@darkrainfall.org>
  * Author: Landon Fuller <landonf@plausiblelabs.com>
  *
- * Copyright (c) 2008-2009 Plausible Labs Cooperative, Inc.
+ * Copyright (c) 2008-2012 Plausible Labs Cooperative, Inc.
  * All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
@@ -26,33 +27,42 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+
 #import "PLCrashFrameWalker.h"
 #import "PLCrashAsync.h"
+#import "PLCrashAsyncImage.h"
 
 #import <signal.h>
 #import <assert.h>
 #import <stdlib.h>
 
-#define RETGEN(name, type, uap, result) {\
-    *result = (uap->uc_mcontext->__ ## type . __ ## name); \
-    return PLFRAME_ESUCCESS; \
-}
-
 #ifdef __x86_64__
 
+#import "libtinyunwind.h"
+
 // PLFrameWalker API
-plframe_error_t plframe_cursor_init (plframe_cursor_t *cursor, ucontext_t *uap) {
+plframe_error_t plframe_cursor_init (plframe_cursor_t *cursor, ucontext_t *uap, plcrash_async_image_list_t *image_list) {
+    int result = 0;
+
     cursor->uap = uap;
-    cursor->init_frame = true;
+    cursor->nframe = -1;
     cursor->fp[0] = NULL;
     
-    return PLFRAME_ESUCCESS;
+    result = tinyunw_init_cursor(&(uap->uc_mcontext->__ss), &cursor->unwind_cursor);
+    return plframe_error_from_tinyunwerror(result);
 }
 
 // PLFrameWalker API
-plframe_error_t plframe_cursor_thread_init (plframe_cursor_t *cursor, thread_t thread) {
+plframe_error_t plframe_cursor_thread_init (plframe_cursor_t *cursor, thread_t thread, plcrash_async_image_list_t *image_list) {
     kern_return_t kr;
     ucontext_t *uap;
+    
+    /*
+        Note: This code has been left untouched when implementing libunwind(3)
+        usage, as 1) Apple's implementation of libunwind on x86_64 doesn't
+        handle floating-point and vector registers, 2) libunwind's general API
+        doesn't provide access to some of the other information retrieved here.
+    */
     
     /* Perform basic initialization */
     uap = &cursor->_uap_data;
@@ -93,110 +103,80 @@ plframe_error_t plframe_cursor_thread_init (plframe_cursor_t *cursor, thread_t t
         return PLFRAME_INTERNAL;
     }
     
-    /* Perform standard initialization */
-    plframe_cursor_init(cursor, uap);
-    
-    return PLFRAME_ESUCCESS;
+    /* Perform standard initialization and return result */
+    return plframe_cursor_init(cursor, uap, image_list);
 }
 
 
 // PLFrameWalker API
 plframe_error_t plframe_cursor_next (plframe_cursor_t *cursor) {
-    kern_return_t kr;
-    void *prevfp = cursor->fp[0];
     
-    /* Fetch the next stack address */
-    if (cursor->init_frame) {
-        /* The first frame is already available, so there's nothing to do */
-        cursor->init_frame = false;
+    /* Must call plframe_cursor_next() at least once to get a valid frame, but
+       libtinyunwind loads a valid frame immediately, so do nothing. */
+    if (cursor->nframe == -1) {
+        ++cursor->nframe;
         return PLFRAME_ESUCCESS;
     } else {
-        if (cursor->fp[0] == NULL) {
-            /* No frame data has been loaded, fetch it from register state */
-            kr = plframe_read_addr((void *) cursor->uap->uc_mcontext->__ss.__rbp, cursor->fp, sizeof(cursor->fp));
+        int result;
+        
+        result = tinyunw_step(&cursor->unwind_cursor, 0);
+        if (result == TINYUNW_ESUCCESS) {
+            ++cursor->nframe;
+            return PLFRAME_ESUCCESS;
+        /* Treat having no unwind info the same as there being no frames left. */
+        } else if (result == TINYUNW_ENOFRAME || result == TINYUNW_ENOINFO) {
+            return PLFRAME_ENOFRAME;
         } else {
-            /* Frame data loaded, walk the stack */
-            kr = plframe_read_addr(cursor->fp[0], cursor->fp, sizeof(cursor->fp));
+            return plframe_error_from_tinyunwerror(result);
         }
     }
-    
-    /* Was the read successful? */
-    if (kr != KERN_SUCCESS)
-        return PLFRAME_EBADFRAME;
-    
-    /* Check for completion */
-    if (cursor->fp[0] == NULL)
-        return PLFRAME_ENOFRAME;
-    
-    /* Is the stack growing in the right direction? */
-    if (!cursor->init_frame && prevfp > cursor->fp[0])
-        return PLFRAME_EBADFRAME;
-    
-    /* New frame fetched */
-    return PLFRAME_ESUCCESS;
+    return PLFRAME_EUNKNOWN; /* should never get here */
 }
 
 
 // PLFrameWalker API
+#define RETGEN(name, type, uap, result) {\
+    *result = (uap->uc_mcontext->__ ## type . __ ## name); \
+    return PLFRAME_ESUCCESS; \
+}
+
 plframe_error_t plframe_get_reg (plframe_cursor_t *cursor, plframe_regnum_t regnum, plframe_greg_t *reg) {
     ucontext_t *uap = cursor->uap;
+    tinyunw_regnum_t unwreg;
     
-    /* Supported register for this context state? */
-    if (cursor->fp[0] != NULL) {
+    if (cursor->nframe != 0) {
         if (regnum == PLFRAME_X86_64_RIP) {
-            *reg = (plframe_greg_t) cursor->fp[1];
+            tinyunw_get_register(&cursor->unwind_cursor, TINYUNW_X86_64_RIP, reg);
             return PLFRAME_ESUCCESS;
         }
-        
         return PLFRAME_ENOTSUP;
     }
-
+    
+    #define MAP_REG(reg)		\
+        case PLFRAME_X86_64_ ## reg:	\
+            unwreg = TINYUNW_X86_64_ ## reg;	\
+            break
+    
     switch (regnum) {
-        case PLFRAME_X86_64_RAX:
-            RETGEN(rax, ss, uap, reg);
-
-        case PLFRAME_X86_64_RBX:
-            RETGEN(rbx, ss, uap, reg);
-
-        case PLFRAME_X86_64_RCX:
-            RETGEN(rcx, ss, uap, reg);
-            
-        case PLFRAME_X86_64_RDX:
-            RETGEN(rdx, ss, uap, reg);
-            
-        case PLFRAME_X86_64_RDI:
-            RETGEN(rdi, ss, uap, reg);
-            
-        case PLFRAME_X86_64_RSI:
-            RETGEN(rsi, ss, uap, reg);
-            
-        case PLFRAME_X86_64_RBP:
-            RETGEN(rbp, ss, uap, reg);
-            
-        case PLFRAME_X86_64_RSP:
-            RETGEN(rsp, ss, uap, reg);
-            
-        case PLFRAME_X86_64_R10:
-            RETGEN(r10, ss, uap, reg);
-            
-        case PLFRAME_X86_64_R11:
-            RETGEN(r11, ss, uap, reg);
-            
-        case PLFRAME_X86_64_R12:
-            RETGEN(r12, ss, uap, reg);
-            
-        case PLFRAME_X86_64_R13:
-            RETGEN(r13, ss, uap, reg);
-            
-        case PLFRAME_X86_64_R14:    
-            RETGEN(r14, ss, uap, reg);
-            
-        case PLFRAME_X86_64_R15:
-            RETGEN(r15, ss, uap, reg);
-            
-        case PLFRAME_X86_64_RIP:
-            RETGEN(rip, ss, uap, reg);
-            
+        MAP_REG(RAX);
+        MAP_REG(RBX);
+        MAP_REG(RCX);
+        MAP_REG(RDX);
+        MAP_REG(RDI);
+        MAP_REG(RSI);
+        MAP_REG(RBP);
+        MAP_REG(RSP);
+        MAP_REG(R10);
+        MAP_REG(R11);
+        MAP_REG(R12);
+        MAP_REG(R13);
+        MAP_REG(R14);
+        MAP_REG(R15);
+        MAP_REG(RIP);
+        
+        /* These registers are not available through the libtinyunwind API, as
+           they either can not be easily or safely read at async-signal time
+           from the current thread, or have no meaning in x86_64 anyway. */
         case PLFRAME_X86_64_RFLAGS:
             RETGEN(rflags, ss, uap, reg);
             
@@ -208,14 +188,18 @@ plframe_error_t plframe_get_reg (plframe_cursor_t *cursor, plframe_regnum_t regn
             
         case PLFRAME_X86_64_GS:
             RETGEN(gs, ss, uap, reg);
-            
+        
         default:
-            // Unsupported register
-            break;
+            return PLFRAME_ENOTSUP;
     }
     
-    return PLFRAME_ENOTSUP;
+    #undef MAP_REG
+    
+    return plframe_error_from_tinyunwerror(tinyunw_get_register(&cursor->unwind_cursor, unwreg, reg));
 }
+
+#undef RETGEN
+
 
 // PLFrameWalker API
 plframe_error_t plframe_get_freg (plframe_cursor_t *cursor, plframe_regnum_t regnum, plframe_fpreg_t *fpreg) {

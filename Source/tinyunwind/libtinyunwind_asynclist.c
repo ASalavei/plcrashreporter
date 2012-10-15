@@ -1,7 +1,8 @@
 /*
  * Author: Landon Fuller <landonf@plausiblelabs.com>
+ * Author: Gwynne Raskind <gwynne@darkrainfall.org>
  *
- * Copyright (c) 2008-2011 Plausible Labs Cooperative, Inc.
+ * Copyright (c) 2008-2012 Plausible Labs Cooperative, Inc.
  * All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
@@ -26,74 +27,50 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "PLCrashAsync.h"
-#include "PLCrashAsyncImage.h"
-
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
+#import "libtinyunwind_asynclist.h"
+#import <stdlib.h>
 
 /**
- * @internal
- * @ingroup plcrash_async
- * @defgroup plcrash_async_image Binary Image Handling
- *
- * Maintains a linked list of binary images with support for async-safe iteration. Writing may occur concurrently with
- * async-safe reading, but is not async-safe.
- *
- * Atomic compare and swap is used to ensure a consistent view of the list for readers. To simplify implementation, a
- * write mutex is held for all updates; the implementation is not designed for efficiency in the face of contention
- * between readers and writers, and it's assumed that no contention should realistically occur.
- * @{
- */
-
-/**
- * Initialize a new binary image list and issue a memory barrier
+ * Initialize a new async list and issue a memory barrier
  *
  * @param list The list structure to be initialized.
  *
  * @warning This method is not async safe.
  */
-void plcrash_async_image_list_init (plcrash_async_image_list_t *list) {
+void tinyunw_async_list_init (tinyunw_async_list_t *list) {
     memset(list, 0, sizeof(*list));
-
     list->write_lock = OS_SPINLOCK_INIT;
 }
 
 /**
- * Free any binary image list resources.
+ * Free any binary async list resources.
  *
  * @warning This method is not async safe.
  */
-void plcrash_async_image_list_free (plcrash_async_image_list_t *list) {
-    plcrash_async_image_t *next = list->head;
+void tinyunw_async_list_free (tinyunw_async_list_t *list) {
+    tinyunw_async_list_entry_t *next = list->head;
     while (next != NULL) {
         /* Save the current pointer and fetch the next pointer. */
-        plcrash_async_image_t *cur = next;
+        tinyunw_async_list_entry_t *cur = next;
         next = cur->next;
-        
-        /* Deallocate the current item. */
-        if (cur->image.name != NULL)
-            free(cur->image.name);
         free(cur);
     }
 }
 
 /**
- * Append a new binary image record to @a list.
+ * Append a new data entry to @a list.
  *
- * @param list The list to which the image record should be appended.
- * @param header The image's header address.
- * @param name The image's name.
+ * @param list The list to which the async record should be appended.
+ * @param data The data pointer. This pointer is not owned by the list.
  *
  * @warning This method is not async safe.
  */
-void plcrash_async_image_list_append (plcrash_async_image_list_t *list, plcrash_macho_image_t *image) {
+void tinyunw_async_list_append (tinyunw_async_list_t *list, void *data) {
     /* Initialize the new entry. */
-    plcrash_async_image_t *new = calloc(1, sizeof(plcrash_async_image_t));
-    new->image = *image;
+    tinyunw_async_list_entry_t *new = calloc(1, sizeof(tinyunw_async_list_entry_t));
+    new->data = data;
     
-    /* Update the image record and issue a memory barrier to ensure a consistent view. */
+    /* Update the entry and issue a memory barrier to ensure a consistent view. */
     OSMemoryBarrier();
     
     /* Lock the list from other writers. */
@@ -108,7 +85,6 @@ void plcrash_async_image_list_append (plcrash_async_image_list_t *list, plcrash_
             /* Atomically update the list head; this will be iterated upon by lockless readers. */
             if (!OSAtomicCompareAndSwapPtrBarrier(NULL, new, (void **) (&list->head))) {
                 /* Should never occur */
-                PLCF_DEBUG("An async image head was set with tail == NULL despite holding lock.");
             }
         }
         
@@ -116,7 +92,6 @@ void plcrash_async_image_list_append (plcrash_async_image_list_t *list, plcrash_
         else {
             /* Atomically slot the new record into place; this may be iterated on by a lockless reader. */
             if (!OSAtomicCompareAndSwapPtrBarrier(NULL, new, (void **) (&list->tail->next))) {
-                PLCF_DEBUG("Failed to append to image list despite holding lock");
             }
 
             /* Update the prev and tail pointers. This is never accessed without a lock, so no additional barrier
@@ -128,19 +103,19 @@ void plcrash_async_image_list_append (plcrash_async_image_list_t *list, plcrash_
 }
 
 /**
- * Remove a binary image record from @a list.
+ * Remove a data entry from @a list.
  *
- * @param header The header address of the record to be removed. The first record matching this address will be removed.
+ * @param data The data pointer to search for and remove.
  *
  * @warning This method is not async safe.
  */
-void plcrash_async_image_list_remove (plcrash_async_image_list_t *list, uintptr_t header) {
+void tinyunw_async_list_remove (tinyunw_async_list_t *list, void *data) {
     /* Lock the list from other writers. */
     OSSpinLockLock(&list->write_lock); {
         /* Find the record. */
-        plcrash_async_image_t *item = list->head;
+        tinyunw_async_list_entry_t *item = list->head;
         while (item != NULL) {
-            if (item->image.header == header)
+            if (item->data == data)
                 break;
 
             item = item->next;
@@ -159,12 +134,10 @@ void plcrash_async_image_list_remove (plcrash_async_image_list_t *list, uintptr_
          */
         if (item == list->head) {
             if (!OSAtomicCompareAndSwapPtrBarrier(item, item->next, (void **) &list->head)) {
-                PLCF_DEBUG("Failed to remove image list head despite holding lock");
             }
         } else {
             /* There MUST be a non-NULL prev pointer, as this is not HEAD. */
             if (!OSAtomicCompareAndSwapPtrBarrier(item, item->next, (void **) &item->prev->next)) {
-                PLCF_DEBUG("Failed to remove image list item despite holding lock");
             }
         }
         
@@ -182,8 +155,6 @@ void plcrash_async_image_list_remove (plcrash_async_image_list_t *list, uintptr_
         while (list->refcount > 0) {
         }
 
-        if (item->image.name != NULL)
-            free(item->image.name);
         free(item);
     } OSSpinLockUnlock(&list->write_lock);
 }
@@ -196,7 +167,7 @@ void plcrash_async_image_list_remove (plcrash_async_image_list_t *list, uintptr_
  * @param list The list to be be retained or released for reading.
  * @param enable If true, the list will be retained. If false, released.
  */
-void plcrash_async_image_list_set_reading (plcrash_async_image_list_t *list, bool enable) {
+void tinyunw_async_list_setreading (tinyunw_async_list_t *list, bool enable) {
     if (enable) {
         /* Increment and issue a barrier. Once issued, no items will be deallocated while a reference is held. */
         OSAtomicIncrement32Barrier(&list->refcount);
@@ -207,18 +178,14 @@ void plcrash_async_image_list_set_reading (plcrash_async_image_list_t *list, boo
 }
 
 /**
- * Return the next image record. This method is async-safe. If no additional images are available, will return NULL;
+ * Return the next entry. This method is async-safe. If no additional entries are available, will return NULL;
  *
  * @param list The list to be iterated.
- * @param current The current image record, or NULL to start iteration.
+ * @param current The current entry, or NULL to start iteration.
  */
-plcrash_async_image_t *plcrash_async_image_list_next (plcrash_async_image_list_t *list, plcrash_async_image_t *current) {
+tinyunw_async_list_entry_t *tinyunw_async_list_next (tinyunw_async_list_t *list, tinyunw_async_list_entry_t *current) {
     if (current != NULL)
         return current->next;
 
     return list->head;
 }
-
-/**
- * @}
- */

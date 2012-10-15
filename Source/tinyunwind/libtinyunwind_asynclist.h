@@ -1,7 +1,8 @@
 /*
  * Author: Landon Fuller <landonf@plausiblelabs.com>
+ * Author: Gwynne Raskind <gwynne@darkrainfall.org>
  *
- * Copyright (c) 2008-2011 Plausible Labs Cooperative, Inc.
+ * Copyright (c) 2008-2012 Plausible Labs Cooperative, Inc.
  * All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
@@ -26,57 +27,44 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <stdint.h>
-#include <libkern/OSAtomic.h>
-#include <stdbool.h>
-#include "PLCrashMachOImage.h"
+#import "libtinyunwind.h"
+#import <libkern/OSAtomic.h>
 
-/**
- * @internal
- * @ingroup plcrash_async_image
- *
- * Async-safe binary image list element.
- */
-typedef struct plcrash_async_image {
-	/** The binary image's data */
-    plcrash_macho_image_t image;
+typedef struct tinyunw_async_list_entry_t {
+    /** The list data. This pointer is NOT considered owned by the entry. */
+    void *data;
 
-    /** The previous image in the list, or NULL. */
-    struct plcrash_async_image *prev;
+    /** The previous entry in the list, or NULL. */
+    struct tinyunw_async_list_entry_t *prev;
     
-    /** The next image in the list, or NULL. */
-    struct plcrash_async_image *next;
-} plcrash_async_image_t;
+    /** The next entry in the list, or NULL. */
+    struct tinyunw_async_list_entry_t *next;
+} tinyunw_async_list_entry_t;
 
-/**
- * @internal
- * @ingroup plcrash_async_image
- *
- * Async-safe binary image list. May be used to iterate over the binary images currently
- * available in-process.
- */
-typedef struct plcrash_async_image_list {
+typedef struct tinyunw_async_list {
     /** The lock used by writers. No lock is required for readers. */
     OSSpinLock write_lock;
 
     /** The head of the list, or NULL if the list is empty. Must only be used to iterate or delete entries. */
-    plcrash_async_image_t *head;
+    tinyunw_async_list_entry_t *head;
 
     /** The tail of the list, or NULL if the list is empty. Must only be used to append new entries. */
-    plcrash_async_image_t *tail;
+    tinyunw_async_list_entry_t *tail;
 
     /** The list reference count. No nodes will be deallocated while the count is greater than 0. If the count
      * reaches 0, all nodes in the free list will be deallocated. */
     int32_t refcount;
+} tinyunw_async_list_t;
 
-    /** The node free list. */
-    plcrash_async_image_t *free;
-} plcrash_async_image_list_t;
+/**
+  * @note The async list routines do not take ownership of pointers. They will not
+  * be released on removal from the list or list deallocation. You are responsible
+  * for ensuring your pointers do not leak.
+  */
 
-void plcrash_async_image_list_init (plcrash_async_image_list_t *list);
-void plcrash_async_image_list_free (plcrash_async_image_list_t *list);
-void plcrash_async_image_list_append (plcrash_async_image_list_t *list, plcrash_macho_image_t *image);
-void plcrash_async_image_list_remove (plcrash_async_image_list_t *list, uintptr_t header);
-
-void plcrash_async_image_list_set_reading (plcrash_async_image_list_t *list, bool enable);
-plcrash_async_image_t *plcrash_async_image_list_next (plcrash_async_image_list_t *list, plcrash_async_image_t *current);
+void tinyunw_async_list_init (tinyunw_async_list_t *list);
+void tinyunw_async_list_free (tinyunw_async_list_t *list);
+void tinyunw_async_list_append (tinyunw_async_list_t *list, void *data);
+void tinyunw_async_list_remove (tinyunw_async_list_t *list, void *data);
+void tinyunw_async_list_setreading (tinyunw_async_list_t *list, bool enable);
+tinyunw_async_list_entry_t *tinyunw_async_list_next (tinyunw_async_list_t *list, tinyunw_async_list_entry_t *current);
