@@ -29,7 +29,6 @@
 #import <Foundation/Foundation.h>
 #import <mach/mach.h>
 
-
 #ifndef PLCRASH_REPORTER
 #define PLCRASH_REPORTER
 
@@ -144,7 +143,7 @@ typedef struct PLCrashReporterCallbacks {
 
 - (void) setCrashCallbacks: (PLCrashReporterCallbacks *) callbacks;
 
-@property(nonatomic, strong) NSData *customData;
+@property(nonatomic, strong) NSData *customDataInfo;
 
 @end
 
