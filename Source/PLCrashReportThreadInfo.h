@@ -28,8 +28,18 @@
 
 #import <Foundation/Foundation.h>
 
+#ifndef PLCRASH_REPORT_THREAD_INFO
+#define PLCRASH_REPORT_THREAD_INFO
+
+#if __has_include(<CrashReporter/PLCrashReportStackFrameInfo.h>) \
+    && __has_include(<CrashReporter/PLCrashReportRegisterInfo.h>)
+#import <CrashReporter/PLCrashReportStackFrameInfo.h>
+#import <CrashReporter/PLCrashReportRegisterInfo.h>
+#else
 #import "PLCrashReportStackFrameInfo.h"
 #import "PLCrashReportRegisterInfo.h"
+#endif
+
 
 @interface PLCrashReportThreadInfo : NSObject {
 @private
@@ -75,3 +85,5 @@
 @property(nonatomic, readonly, strong) NSArray *registers;
 
 @end
+
+#endif
