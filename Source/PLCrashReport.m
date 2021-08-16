@@ -613,14 +613,6 @@ error:
  * instances on success.
  */
 - (NSArray *) extractThreadInfo: (Plcrash__CrashReport *) crashReport error: (NSError **) outError {
-    /* There should be at least one thread */
-    if (crashReport->n_threads == 0) {
-        populate_nserror(outError, PLCrashReporterErrorCrashReportInvalid,
-                         NSLocalizedString(@"Crash report is missing thread state information",
-                                           @"Missing thread info in crash report"));
-        return nil;
-    }
-
     /* Handle all threads */
     NSMutableArray *threadResult = [NSMutableArray arrayWithCapacity: crashReport->n_threads];
     for (size_t thr_idx = 0; thr_idx < crashReport->n_threads; thr_idx++) {

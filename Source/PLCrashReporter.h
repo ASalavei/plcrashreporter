@@ -43,6 +43,7 @@
 @class PLCrashMachExceptionServer;
 @class PLCrashMachExceptionPortSet;
 
+PLCR_EXPORT const thread_t kPLCrashReporterSkipThreadData;
 /**
  * @ingroup functions
  *

@@ -69,6 +69,8 @@ static NSString *PLCRASH_LIVE_CRASHREPORT = @"live_report.plcrash";
  * Directory containing crash reports queued for sending. */
 static NSString *PLCRASH_QUEUED_DIR = @"queued_reports";
 
+const thread_t kPLCrashReporterSkipThreadData = 0;
+
 /** @internal
  * Maximum number of bytes that will be written to the crash report.
  * Used as a safety measure in case of implementation malfunction.
