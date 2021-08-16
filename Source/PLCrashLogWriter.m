@@ -982,30 +982,28 @@ static size_t plcrash_writer_write_thread (plcrash_async_file_t *file,
         }
 
         /* Walk the stack, limiting the total number of frames that are output. */
-        if (thread != 0) {
-            uint32_t frame_count = 0;
-            while ((ferr = plframe_cursor_next(&cursor)) == PLFRAME_ESUCCESS && frame_count < MAX_THREAD_FRAMES) {
-                uint32_t frame_size;
+        uint32_t frame_count = 0;
+        while ((ferr = plframe_cursor_next(&cursor)) == PLFRAME_ESUCCESS && frame_count < MAX_THREAD_FRAMES) {
+            uint32_t frame_size;
 
-                /* On the first frame, dump registers for the crashed thread */
-                if (frame_count == 0 && crashed) {
-                    rv += plcrash_writer_write_thread_registers(file, task, &cursor);
-                }
-
-                /* Fetch the PC value */
-                plcrash_greg_t pc = 0;
-                if ((ferr = plframe_cursor_get_reg(&cursor, PLCRASH_REG_IP, &pc)) != PLFRAME_ESUCCESS) {
-                    PLCF_DEBUG("Could not retrieve frame PC register: %s", plframe_strerror(ferr));
-                    break;
-                }
-
-                /* Determine the size */
-                frame_size = (uint32_t) plcrash_writer_write_thread_frame(NULL, writer, pc, image_list, findContext);
-
-                rv += plcrash_writer_pack(file, PLCRASH_PROTO_THREAD_FRAMES_ID, PLPROTOBUF_C_TYPE_MESSAGE, &frame_size);
-                rv += plcrash_writer_write_thread_frame(file, writer, pc, image_list, findContext);
-                frame_count++;
+            /* On the first frame, dump registers for the crashed thread */
+            if (frame_count == 0 && crashed) {
+                rv += plcrash_writer_write_thread_registers(file, task, &cursor);
             }
+
+            /* Fetch the PC value */
+            plcrash_greg_t pc = 0;
+            if ((ferr = plframe_cursor_get_reg(&cursor, PLCRASH_REG_IP, &pc)) != PLFRAME_ESUCCESS) {
+                PLCF_DEBUG("Could not retrieve frame PC register: %s", plframe_strerror(ferr));
+                break;
+            }
+
+            /* Determine the size */
+            frame_size = (uint32_t) plcrash_writer_write_thread_frame(NULL, writer, pc, image_list, findContext);
+
+            rv += plcrash_writer_pack(file, PLCRASH_PROTO_THREAD_FRAMES_ID, PLPROTOBUF_C_TYPE_MESSAGE, &frame_size);
+            rv += plcrash_writer_write_thread_frame(file, writer, pc, image_list, findContext);
+            frame_count++;
         }
 
         /* Did we reach the end successfully? */
@@ -1344,35 +1342,37 @@ plcrash_error_t plcrash_log_writer_write (plcrash_log_writer_t *writer,
     }
     
     /* Threads */
-    uint32_t thread_number = 0;
-    for (mach_msg_type_number_t i = 0; i < thread_count; i++) {
-        thread_t thread = threads[i];
-        plcrash_async_thread_state_t *thr_ctx = NULL;
-        bool crashed = false;
-        uint32_t size;
+    if (crashed_thread != 0) {
+        uint32_t thread_number = 0;
+        for (mach_msg_type_number_t i = 0; i < thread_count; i++) {
+            thread_t thread = threads[i];
+            plcrash_async_thread_state_t *thr_ctx = NULL;
+            bool crashed = false;
+            uint32_t size;
 
-        /* If executing on the target thread, we need to a valid context to walk */
-        if (pl_mach_thread_self() == thread) {
-            /* Can't log a report for the current thread without a valid context. */
-            if (current_state == NULL)
-                continue;
-        
-            thr_ctx = current_state;
+            /* If executing on the target thread, we need to a valid context to walk */
+            if (pl_mach_thread_self() == thread) {
+                /* Can't log a report for the current thread without a valid context. */
+                if (current_state == NULL)
+                    continue;
+
+                thr_ctx = current_state;
+            }
+
+            /* Check if this is the crashed thread */
+            if (crashed_thread == thread) {
+                crashed = true;
+            }
+
+            /* Determine the size */
+            size = (uint32_t) plcrash_writer_write_thread(NULL, writer, mach_task_self(), thread, thread_number, thr_ctx, image_list, &findContext, crashed);
+
+            /* Write message */
+            plcrash_writer_pack(file, PLCRASH_PROTO_THREADS_ID, PLPROTOBUF_C_TYPE_MESSAGE, &size);
+            plcrash_writer_write_thread(file, writer, mach_task_self(), thread, thread_number, thr_ctx, image_list, &findContext, crashed);
+
+            thread_number++;
         }
-        
-        /* Check if this is the crashed thread */
-        if (crashed_thread == thread) {
-            crashed = true;
-        }
-
-        /* Determine the size */
-        size = (uint32_t) plcrash_writer_write_thread(NULL, writer, mach_task_self(), thread, thread_number, thr_ctx, image_list, &findContext, crashed);
-
-        /* Write message */
-        plcrash_writer_pack(file, PLCRASH_PROTO_THREADS_ID, PLPROTOBUF_C_TYPE_MESSAGE, &size);
-        plcrash_writer_write_thread(file, writer, mach_task_self(), thread, thread_number, thr_ctx, image_list, &findContext, crashed);
-
-        thread_number++;
     }
 
     /* Binary Images */
